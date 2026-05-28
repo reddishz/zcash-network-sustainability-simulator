@@ -624,7 +624,6 @@
       <div class="future-row">
         <span class="ltoggle active" data-series="supply"><span class="sw" style="background:var(--supplyObs)"></span>Supply</span>
         <span class="ltoggle active" data-series="issDay"><span class="sw" style="background:var(--issObs)"></span>Issuance / Day</span>
-        <span class="ltoggle" data-series="annPct"><span class="sw" style="background:var(--annualObs)"></span>Annual %</span>
         <span><span class="dash"></span> Dashed = <b>Expected</b></span>
       </div>
     </div>
@@ -645,7 +644,7 @@
      /* ================================================================
         Toggle state
         ================================================================ */
-     const show = {supply:true, issDay:true, annPct:false};
+     const show = {supply:true, issDay:true};
      const showFuture = { default: true, zip234: true, nsmalt: false, byoi: false };
      function showDefaultFuture() { return showFuture.default; }
      function showZip234() { return showFuture.zip234; }
@@ -740,7 +739,6 @@
        const frac = (scaled % 100n < 0n ? -(scaled % 100n) : scaled % 100n);
        return String(whole) + '.' + String(frac).padStart(2, '0');
      }
-     function annPctVal(p) { return p.annualPctX1M < 0n ? NaN : Number(p.annualPctX1M) / 1e6; }
 
      function parseZecToZat(str) {
        str = str.replace(/,/g, '').trim();
@@ -1023,22 +1021,6 @@
      };
      let simVersion=0n,simRunning=false,simComputedVer=-1n,simComputedMaxH=-1n;
 
-     function fillAnnualPct(arr) {
-       for (let i = 0; i < arr.length; i++) {
-         const p = arr[i];
-         if (p.supplyZat <= 0n || p.h < 20000n) continue;
-         const targetH = heightAfterDuration(p.h, ONE_YEAR_MS);
-         let lo = i + 1, hi = arr.length - 1;
-         while (lo < hi) { const mid = (lo + hi) >> 1; arr[mid].h < targetH ? lo = mid + 1 : hi = mid; }
-         if (lo >= arr.length) continue;
-         const annIssZat = arr[lo].cumIssZat - p.cumIssZat;
-         if (annIssZat >= 0n && p.supplyZat > 0n) {
-           p.annualPctX1M = (annIssZat * 100_000_000n) / p.supplyZat;
-           p.annualPctIsExpected = (arr[lo].h > WRITTEN_HEIGHT);
-         }
-       }
-     }
-
      function lookupScenario(arr,h){
        if(!arr.length)return null;
        let lo=0,hi=arr.length-1;
@@ -1133,9 +1115,7 @@
                    supplyZat:s.supZat,
                    cumIssZat:s.cumIssZat,
                    issBlockZat:issZat,
-                   issDayZat:issZat*86400n/spb,
-                   annualPctX1M:-1n,
-                   annualPctIsExpected:false
+                   issDayZat:issZat*86400n/spb
                  };
                  s.result.push(pt);
                }
@@ -1147,11 +1127,6 @@
            requestDraw();
            await new Promise(r=>setTimeout(r,0));
            if(simVersion!==myVer){cancelled=true;}
-         }
-
-         if(!cancelled&&simVersion===myVer){
-           for(const name of names)fillAnnualPct(scenarios[name].data);
-           simComputedVer=myVer;simComputedMaxH=maxH;break;
          }
        }
        simRunning=false;if(isFirstRun && !yLockedFromURL) yDirty=true;requestDraw();
@@ -1217,17 +1192,16 @@
      }
 
      function computeLeftMargin(isNarrow){
-       if(isNarrow){if(show.issDay||show.annPct)return 52;return 16;}
-       const AXIS_W=62;let count=0;if(show.issDay)count++;if(show.annPct)count++;
+       if(isNarrow){if(show.issDay)return 52;return 16;}
+       const AXIS_W=62;let count=0;if(show.issDay)count++;
        return count===0?20:8+count*AXIS_W;
      }
 
      function leftAxisLayout(isNarrow){
-       const r={issDay:null,annPct:null};
-       if(isNarrow){if(show.issDay)r.issDay={tickX:6,titleX:null};else if(show.annPct)r.annPct={tickX:6,titleX:null};return r;}
+       const r={issDay:null};
+       if(isNarrow){if(show.issDay)r.issDay={tickX:6,titleX:null};else return r;}
        let off=6;
        if(show.issDay){r.issDay={tickX:off,titleX:off+44};off+=62;}
-       if(show.annPct){r.annPct={tickX:off,titleX:off+44};off+=62;}
        return r;
      }
 
@@ -1353,7 +1327,6 @@
            if (p.time < view.tMin || p.time > view.tMax || p.h < minH) continue;
            if (show.supply) { if (p.supplyZat < sMin) sMin = p.supplyZat; if (p.supplyZat > sMax) sMax = p.supplyZat; }
            if (show.issDay && p.issDayZat > iMax) iMax = p.issDayZat;
-           if (show.annPct && p.annualPctX1M > 0n && p.annualPctX1M < 200_000_000n && p.annualPctX1M > aMax) aMax = p.annualPctX1M;
          }
        }
 
@@ -1361,7 +1334,6 @@
          if (p.time < view.tMin || p.time > view.tMax || p.h > cutH) continue;
          if (show.supply) { if (p.supplyZat < sMin) sMin = p.supplyZat; if (p.supplyZat > sMax) sMax = p.supplyZat; }
          if (show.issDay && p.issDayZat > iMax) iMax = p.issDayZat;
-         if (show.annPct && p.annualPctX1M > 0n && p.annualPctX1M < 200_000_000n && p.annualPctX1M > aMax) aMax = p.annualPctX1M;
        }
        if (showZip234()) scanArr(scenarios.zip234.data, zip234ActivationHeight);
        if (showNsmalt()) scanArr(scenarios.nsmalt.data, zip234ActivationHeight);
@@ -1378,12 +1350,6 @@
          const sc = niceScaleZat(0n, iMax, true);
          yTarget.issMaxZat = sc.maxZat; yTarget.issStepZat = sc.stepZat;
        } else { yTarget.issMaxZat = FIXED_ISS_MAX_ZAT; yTarget.issStepZat = FIXED_ISS_STEP_ZAT; }
-
-       const aPct = Number(aMax) / 1_000_000, eff = Math.min(aPct, FIXED_ANN_MAX);
-       if (show.annPct && eff > 0 && eff / FIXED_ANN_MAX < 0.4) {
-         const r = eff * 1.05, st = niceStepNum(r, 5);
-         yTarget.annMax = Math.ceil(r / st) * st; yTarget.annStep = st;
-       } else { yTarget.annMax = FIXED_ANN_MAX; yTarget.annStep = FIXED_ANN_STEP; }
 
        requestDraw();
      }
@@ -1552,7 +1518,6 @@
            drawSplit(D,WRITTEN_HEIGHT,p=>ySP(p.supplyZat),T.supplyObs,T.supplyExp,2);
          }
          if(show.issDay)drawSplit(D,WRITTEN_HEIGHT,p=>yIP(p.issDayZat),T.issObs,T.issExp,2);
-         if(show.annPct)drawSplit(D,ANNUAL_PCT_SPLIT_HEIGHT,p=>{const v=annPctVal(p);if(!isFinite(v)||v>200)return NaN;return yAP(v);},T.annualObs,T.annualExp,1.8);
        }
 
        // ZIP 234 curves
@@ -1570,7 +1535,6 @@
 
          if(show.supply)drawZ234Line(p=>ySP(p.supplyZat),T.zip234Supply,2.5);
          if(show.issDay)drawZ234Line(p=>yIP(p.issDayZat),T.zip234Iss,2.5);
-         if(show.annPct)drawZ234Line(p=>{const v=annPctVal(p);if(!isFinite(v)||v>200)return NaN;return yAP(v);},T.zip234Ann,1.8);
        }
 
        // NSMalt curves (distinct dash pattern: short dashes)
@@ -1588,7 +1552,6 @@
 
          if(show.supply)drawNsmaltLine(p=>ySP(p.supplyZat),T.nsmaltSupply,2.5);
          if(show.issDay)drawNsmaltLine(p=>yIP(p.issDayZat),T.nsmaltIss,2.5);
-         if(show.annPct)drawNsmaltLine(p=>{const v=annPctVal(p);if(!isFinite(v)||v>200)return NaN;return yAP(v);},T.nsmaltAnn,1.8);
        }
 
        if(showByoi()&&B.length>=1){
@@ -1600,7 +1563,6 @@
          }
          if(show.supply)drawByoiLine(p=>ySP(p.supplyZat),"#22c55e",2.5);
          if(show.issDay)drawByoiLine(p=>yIP(p.issDayZat),"#86efac",2.5);
-         if(show.annPct)drawByoiLine(p=>{const v=annPctVal(p);if(!isFinite(v)||v>200)return NaN;return yAP(v);},"#22c55e",1.8);
        }
 
        ctx.restore();// end clip
@@ -1645,19 +1607,6 @@
          }
          if(!isNarrow&&ax.titleX!=null){ctx.save();ctx.translate(MG.left-ax.titleX,MG.top+PH/2);ctx.rotate(-Math.PI/2);
            ctx.fillStyle=T.issObs;ctx.font="12px system-ui";ctx.textAlign="center";ctx.fillText("Issuance per Day (ⓩ)",0,0);ctx.restore();}}
-
-       // Left axis 2 (Annual %)
-       if(show.annPct&&axL.annPct){const ax=axL.annPct,bx=MG.left-ax.tickX;
-         ctx.fillStyle=T.annualObs;ctx.font="10px system-ui";ctx.textAlign="right";
-         for(let p=0;p<=yDisp.annMax;p+=dispAnnStep){
-           const py = yAP(p);
-           if (py >= MG.top - 5 && py <= MG.top + PH + 5) {
-             const dec = dispAnnStep < 1 ? (dispAnnStep < 0.1 ? 2 : 1) : 0;
-             ctx.fillText(p.toFixed(dec)+"%",bx,py+3);
-           }
-         }
-         if(!isNarrow&&ax.titleX!=null){ctx.save();ctx.translate(MG.left-ax.titleX,MG.top+PH/2);ctx.rotate(-Math.PI/2);
-           ctx.fillStyle=T.annualObs;ctx.font="11px system-ui";ctx.textAlign="center";ctx.fillText("Annualized Supply %",0,0);ctx.restore();}}
 
        // Right axis (Supply)
        if(show.supply&&axR.supply){const ax=axR.supply,bx=MG.left+PW+ax.tickX;
@@ -2233,10 +2182,6 @@
        const d=tooltipData[lo];
 
        const isExp=d.h>WRITTEN_HEIGHT,status=isExp?"Expected":"Observed",sc=isExp?"tt-exp":"tt-obs";
-       const pct = pctOfCapStr(d.supplyZat);
-       const annStatus=d.annualPctIsExpected?"expected":"observed";
-       const annVal=isFinite(annPctVal(d))?annPctVal(d).toFixed(2)+"%":"—";
-       const annColor=d.annualPctIsExpected?"var(--annualExp)":"var(--annualObs)";
 
        let html=`<div><b>Block ${d.h.toLocaleString()}</b> · <span class="${sc}">${status}</span></div>`+
                 `<div class="tt-muted">${fmtDate(d.time)} (UTC)</div>`;
@@ -2248,7 +2193,6 @@
        if(showDefHere){
          if(show.supply)html+=`<div style="margin-top:6px"><span style="color:var(--supplyObs)">Supply:</span> ${zatToZecString(d.supplyZat, 2)} ⓩ <span class="tt-muted">(${pct}% of cap)</span></div>`;
          if(show.issDay)html+=`<div><span style="color:var(--issObs)">Issuance:</span> ${zatToZecString(d.issDayZat, 1)} ⓩ/day</div><div class="tt-muted">Per block: ${zatToZecString(d.issBlockZat, 8, 8)} ⓩ</div>`;
-         if(show.annPct)html+=`<div><span style="color:${annColor}">Annual:</span> ${annVal} <span class="tt-muted">(${annStatus})</span></div>`;
        }
 
        if(showZip234()&&d.h>=zip234ActivationHeight){
@@ -2257,7 +2201,6 @@
            html+=`<div style="margin-top:6px;border-top:1px solid rgba(148,163,184,0.2);padding-top:4px"><b style="color:var(--zip234Supply)">ZIP 234 (smooth):</b></div>`;
            if(show.supply){const zp=pctOfCapStr(z.supplyZat);html+=`<div><span style="color:var(--zip234Supply)">Supply:</span> ${zatToZecString(z.supplyZat, 2)} ⓩ <span class="tt-muted">(${zp}%)</span></div>`;}
            if(show.issDay)html+=`<div><span style="color:var(--zip234Iss)">Issuance:</span> ${zatToZecString(z.issDayZat, 1)} ⓩ/day</div><div class="tt-muted">Per block: ${zatToZecString(z.issBlockZat, 8, 8)} ⓩ</div>`;
-           if(show.annPct){const av=isFinite(annPctVal(z))?annPctVal(z).toFixed(2)+"%":"—";html+=`<div><span style="color:var(--zip234Ann)">Annual:</span> ${av}</div>`;}
          }
        }else if(showZip234()&&d.h<zip234ActivationHeight){
          html+=`<div style="margin-top:4px" class="tt-muted"><i>ZIP 234 activates at block ${zip234ActivationHeight.toLocaleString()}</i></div>`;
@@ -2269,7 +2212,6 @@
            html+=`<div style="margin-top:6px;border-top:1px solid rgba(148,163,184,0.2);padding-top:4px"><b style="color:var(--nsmaltSupply)">NSMalt (default + fund):</b></div>`;
            if(show.supply){const np=pctOfCapStr(n.supplyZat);html+=`<div><span style="color:var(--nsmaltSupply)">Supply:</span> ${zatToZecString(n.supplyZat, 2)} ⓩ <span class="tt-muted">(${np}%)</span></div>`;}
            if(show.issDay)html+=`<div><span style="color:var(--nsmaltIss)">Issuance:</span> ${zatToZecString(n.issDayZat, 1)} ⓩ/day</div><div class="tt-muted">Per block: ${zatToZecString(n.issBlockZat, 8, 8)} ⓩ</div>`;
-           if(show.annPct){const av=isFinite(annPctVal(n))?annPctVal(n).toFixed(2)+"%":"—";html+=`<div><span style="color:var(--nsmaltAnn)">Annual:</span> ${av}</div>`;}
            if(n.fundZat !== undefined) html+=`<div class="tt-muted">Fund: ${zatToZecString(n.fundZat, 2)} ⓩ</div>`;
          }
        }else if(showNsmalt()&&d.h<zip234ActivationHeight){
@@ -2282,7 +2224,6 @@
            html+=`<div style="margin-top:6px;border-top:1px solid rgba(148,163,184,0.2);padding-top:4px"><b style="color:#22c55e">BYOI:</b></div>`;
            if(show.supply){const bp=pctOfCapStr(b.supplyZat);html+=`<div><span style="color:#22c55e">Supply:</span> ${zatToZecString(b.supplyZat, 2)} ⓩ <span class="tt-muted">(${bp}%)</span></div>`;}
            if(show.issDay)html+=`<div><span style="color:#86efac">Issuance:</span> ${zatToZecString(b.issDayZat, 1)} ⓩ/day</div><div class="tt-muted">Per block: ${zatToZecString(b.issBlockZat, 8, 8)} ⓩ</div>`;
-           if(show.annPct){const av=isFinite(annPctVal(b))?annPctVal(b).toFixed(2)+"%":"—";html+=`<div><span style="color:#22c55e">Annual:</span> ${av}</div>`;}
          }
        }else if(showByoi()&&d.h<zip234ActivationHeight){
          html+=`<div style="margin-top:4px" class="tt-muted"><i>BYOI activates at block ${zip234ActivationHeight.toLocaleString()}</i></div>`;
@@ -2665,7 +2606,7 @@
        // v7 flags byte:
        // bit0 showFuture.default, bit1 showFuture.zip234,
        // bit2 showFuture.nsmalt, bit3 showFuture.byoi,
-       // bit4 supply, bit5 issDay, bit6 annPct, bit7 themeLight
+       // bit4 supply, bit5 issDay, bit7 themeLight
        let flags = 0;
        if (showFuture.default) flags |= (1 << 0);
        if (showFuture.zip234)  flags |= (1 << 1);
@@ -2673,7 +2614,6 @@
        if (showFuture.byoi)    flags |= (1 << 3);
        if (show.supply)        flags |= (1 << 4);
        if (show.issDay)        flags |= (1 << 5);
-       if (show.annPct)        flags |= (1 << 6);
        if (getTheme() === "light") flags |= (1 << 7);
        out.push(flags);
        out.push(actCollapsed ? 1 : 0);
@@ -2749,7 +2689,6 @@
          newShow = {
            supply: !!(flags & (1 << 4)),
            issDay: !!(flags & (1 << 5)),
-           annPct: !!(flags & (1 << 6)),
          };
          newTheme = (flags & (1 << 7)) ? "light" : "dark";
          newActCollapsed = !!(actByte & 1);
@@ -2812,7 +2751,6 @@
          showFuture.byoi = newShowFuture.byoi;
          show.supply = newShow.supply;
          show.issDay = newShow.issDay;
-         show.annPct = newShow.annPct;
          zip234ActivationHeight = actH;
 
          BURN_EVENTS.length = 0;
