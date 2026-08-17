@@ -635,7 +635,7 @@
       <button id="btnAddBurn">+ Add burn event</button>
     </div>
     <script>
-     const DEFAULT_STATE_HASH = '#z=B7EBxN7FmfUqpvXY4vM6mMLjAQWy5NcBgLCiyqj9AwKz-f8BgNCHhOuOBQLrjKkCgKzH8DcD9cvkAoC4yeWuBAOescwBgODu4uSGEQIAgICG1Lac9AOAgN2dpBew6gEBEnJldHVybiAxMDBfiAKJAosCOw';
+     const DEFAULT_STATE_HASH = '#z=CLMAnOys9oEtjKaspMo704XhAQW949oBgODu4uSGEQKy5NcBgLCiyqj9AwKz-f8BgKzH8DcB64ypAoDg7uLkhhEC9cvkAoC4yeWuBAEAgICG1Lac9AOAgN2dpBcAJXJldHVybiAoTUFYX1NVUFBMWSAtIHMpIC8gMl80MjNfNzI4bjs';
 
      function min(a, b) { return a < b ? a : b; }
      function max(a, b) { return a > b ? a : b; }
@@ -773,10 +773,11 @@
        {h:653_600n,time:Date.UTC(2019,11,11,21,50),label:"Blossom"},
        {h:1_046_400n,time:Date.UTC(2020,10,18,12,34),label:"Halving 1"},
        {h:2_726_400n,time:Date.UTC(2024,10,23,1,51),label:"Halving 2"},
+       {h:3_450_198n,time:Date.UTC(2026,7,16,7,46),label:"Observed tip"},
      ];
 
      const BLOSSOM_ACTIVATION_HEIGHT=653_600n;
-     const WRITTEN_HEIGHT=3_234_946n;
+     const WRITTEN_HEIGHT=3_450_198n;
 
      const DEFAULT_BURN_ONCE_ZAT = 750_000n * 100_000_000n;
      const DEFAULT_BURN_PERDAY_ZAT = 100n * 100_000_000n;
@@ -785,9 +786,11 @@
        return b.mode === 'perday' ? b.perdayZat : b.onceZat;
      }
 
-     function syncBurnActiveAmount(b) {
-       b.zat = activeBurnZat(b);
-       b.label = formatBurnLabel(b.zat, b.mode);
+     // Exact cumulative per-day burn: total burned through n blocks after the
+     // start telescopes to floor(amt*spb*n/86400), so no rounding loss accumulates.
+     function perdayBurnAtBlock(burnAmt, spb, n) {
+       return (burnAmt * spb * (n + 1n)) / 86400n
+            - (burnAmt * spb * n) / 86400n;
      }
 
      let burnIdCounter = 0;
@@ -817,34 +820,36 @@
      for(let i=0;i<TIME_ANCHORS.length-1;i++){
        const a=TIME_ANCHORS[i],b=TIME_ANCHORS[i+1];
        SEGMENTS.push({startH:a.h,endH:b.h,startTime:a.time,
-                      secPerBlock:BigInt(b.time-a.time)/1000n/(b.h-a.h)});
+                      msNum:BigInt(b.time-a.time),   // exact ms across segment
+                      hDen:b.h-a.h});                // blocks across segment
      }
+     const LAST_ANCHOR = TIME_ANCHORS[TIME_ANCHORS.length-1];
+     const FUTURE_MS_PER_BLOCK = 75_000n;  // consensus target, exact — used beyond the last anchor
 
      function segmentForHeight(h){for(let i=0;i<SEGMENTS.length;i++)if(h<=SEGMENTS[i].endH)return SEGMENTS[i];return SEGMENTS[SEGMENTS.length-1];}
      function blockToTime(h){
+       if (typeof h !== 'bigint') throw new TypeError("blockToTime requires a BigInt height, got " + typeof h);
+       if (h > LAST_ANCHOR.h)
+         return LAST_ANCHOR.time + Number((h - LAST_ANCHOR.h) * FUTURE_MS_PER_BLOCK);
        const s=segmentForHeight(h);
-       const hB = typeof h === 'bigint' ? h : BigInt(h);
-       return s.startTime + Number((hB - s.startH) * s.secPerBlock) * 1000;
+       // multiply-before-divide: exact BigInt ms, then a lossless Number conversion
+       return s.startTime + Number((h - s.startH) * s.msNum / s.hDen);
      }
-     function secsPerBlock(h){return segmentForHeight(h).secPerBlock;}
+
      function timeToHeight(t){
+       const tMs = BigInt(Math.trunc(t));
+       if (t >= LAST_ANCHOR.time)
+         return LAST_ANCHOR.h + (tMs - BigInt(LAST_ANCHOR.time)) / FUTURE_MS_PER_BLOCK;
        for(let i=SEGMENTS.length-1;i>=0;i--){
          const s=SEGMENTS[i];
          if(t>=s.startTime)
-           return s.startH + BigInt(Math.trunc(t-s.startTime)) / (s.secPerBlock*1000n);
+           return s.startH + (tMs - BigInt(s.startTime)) * s.hDen / s.msNum;
        }
        const s=SEGMENTS[0];
-       return s.startH + BigInt(Math.trunc(t-s.startTime)) / (s.secPerBlock*1000n);
-     }
-     function heightAfterDuration(h,durationMs){
-       let remaining=durationMs/1000n,cur=h;
-       for(let i=0;i<SEGMENTS.length;i++){const s=SEGMENTS[i];if(cur>s.endH)continue;
-         const hStart=max(cur,s.startH),secsToEnd=(s.endH-hStart)*s.secPerBlock;
-         if(remaining<=secsToEnd)return hStart+remaining/s.secPerBlock;remaining-=secsToEnd;cur=s.endH;}
-       const last=SEGMENTS[SEGMENTS.length-1];return max(cur,last.endH)+remaining/last.secPerBlock;
+       return s.startH + (tMs - BigInt(s.startTime)) * s.hDen / s.msNum;
      }
 
-     const genTime=blockToTime(0);
+     const genTime=blockToTime(0n);
      const writtenTime=blockToTime(WRITTEN_HEIGHT);
      function fmtDate(ms){const d=new Date(ms);const mo=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return mo[d.getUTCMonth()]+" "+d.getUTCDate()+", "+d.getUTCFullYear();}
 
@@ -900,89 +905,107 @@
         ================================================================ */
      const ZATOSHI=100_000_000n,SAMPLE_EVERY=1000n,SIM_BATCH=80_000n;
      const MAX_MONEY_ZEC=21_000_000n;
-     const MAX_MONEY_ZAT = 2_100_000_000_000_000n;
-     const _kFloat = 1 - Math.pow(2, -1/1680000);
-     const ZIP234_K = _kFloat;
-     const ZIP234_K_NUM = BigInt(Math.round(_kFloat * (2**32))) * (1n << 32n);
-     const ZIP234_K_SHIFT = 64n;
+     const MAX_MONEY_ZAT = MAX_MONEY_ZEC * ZATOSHI;
+     const HALVING_2_HEIGHT = 2_726_400n;
+
+     // General-purpose constants available to ALL issuance snippets (proposal-neutral chain facts).
+     const SNIPPET_CONSTANTS = {
+       ZEC: ZATOSHI,                       // zats per ZEC
+       MAX_SUPPLY: MAX_MONEY_ZAT,          // the 21 million coin cap
+       BLOCKS_PER_HALVING: 1_680_000n,     // four years of 75s blocks
+       HALVING_2_HEIGHT: 2_726_400n,       // block height of the second halving (Nov 2024)
+     };
+     const SNIPPET_CONSTANT_VALUES = Object.values(SNIPPET_CONSTANTS);
+
      // Shared activation height for ZIP 234 and NSMalt
      let zip234ActivationHeight=3_687_123n;
 
      // --- Minimal snippets (future direction; h >= WRITTEN_HEIGHT) ---
-     function defaultFutureIssuanceFromH(h) {
-       return 625000000n >> ((h + 633600n) / 1680000n);
-     }
-     function zip234IssuanceFromS(s) {
-       return ((MAX_MONEY_ZAT - s) * ZIP234_K_NUM) >> ZIP234_K_SHIFT;
-     }
-     function nsmaltIssuanceFromHS(h, s) {
-       // Default cumulative supply at block h (no function calls; depends only on h)
-       // Valid for this future sim path where h >= WRITTEN_HEIGHT (> 2,726,400).
-       let d = 1_575_000_000_000_000n; // default supply at block 2,726,399
-       let i = 0n;
-       const e = (h - 2_726_400n) / 1_680_000n;
-       for (; i < e; i++) d += (156_250_000n >> i) * 1_680_000n;
-       d += (156_250_000n >> e) * ((h - 2_726_400n) % 1_680_000n + 1n);
-       d -= s; // deficit/fund-equivalent
-       return defaultFutureIssuanceFromH(h)
-            + (d > 0n ? ((d * ZIP234_K_NUM) >> ZIP234_K_SHIFT) : 0n);
-     }
-     function defaultIssuanceZat(h, s) {
-       return h >= WRITTEN_HEIGHT ? defaultFutureIssuanceFromH(h) : issuance_per_block(h);
-     }
-     function zip234IssuanceZat(h, s) {
-       return h >= zip234ActivationHeight ? zip234IssuanceFromS(s) : defaultIssuanceZat(h, s);
-     }
-     function nsmaltIssuanceZat(h, s) {
-       return h >= zip234ActivationHeight ? nsmaltIssuanceFromHS(h, s) : defaultIssuanceZat(h, s);
-     }
-
-     const DEFAULT_CODE = "return 625000000n >> ((h + 633600n) / 1680000n);";
-     const ZIP234_CODE = "return ((2100000000000000n - s) * " + ZIP234_K_NUM.toString() + "n) >> 64n;";
-     const NSMALT_CODE = "let d=1575000000000000n,i=0n,e=(h-2726400n)/1680000n;for(;i<e;i++)d+=(156250000n>>i)*1680000n;d+=(156250000n>>e)*((h-2726400n)%1680000n+1n);d-=s;return (625000000n>>((h+633600n)/1680000n))+(d>0n?((d*" + ZIP234_K_NUM.toString() + "n)>>64n):0n);";
+     const DEFAULT_CODE = "return 156_250_000n >> ((h - HALVING_2_HEIGHT) / BLOCKS_PER_HALVING);";
+     const ZIP234_CODE = "return (MAX_SUPPLY - s) / 2_423_728n;";
+     const NSMALT_CODE = "let deficit = 15_750_000n*ZEC; let i = 0n; let e = (h - HALVING_2_HEIGHT) / BLOCKS_PER_HALVING; for(; i < e; i++) deficit += (156_250_000n >> i) * BLOCKS_PER_HALVING; deficit += (156_250_000n >> e) * ((h - HALVING_2_HEIGHT) % BLOCKS_PER_HALVING + 1n); deficit -= s; return (156_250_000n >> e) + (deficit > 0n ? deficit / 2_423_728n : 0n);";
 
      const DEFAULT_BYOI_CODE = ZIP234_CODE;
 
      let byoiCode = DEFAULT_BYOI_CODE;
-     let byoiFn = null;
-     let byoiError = "";
-     function compileByoi(code) {
+     function compileSnippet(code) {
        const src = String(code || "").trim();
-       if (!src) throw new Error("BYOI code is empty");
-       const expr = src.replace(/^return\s+/,"").replace(/;$/,"");
-       if (/[.[\]'"`\\]/.test(expr)) throw new Error("property/string/index access is not allowed");
-       if (/\b(function|class|new|this|globalThis|window|document|eval|Function|import)\b/.test(expr)) {
+       if (!src) throw new Error("code is empty");
+
+       // Banned characters, checked one at a time (no regex character class needed).
+       // charCode 92 is the backslash, 96 is the backtick.
+       const banned = ".{}'\"" + String.fromCharCode(96) + String.fromCharCode(92) + "[]";
+       for (const ch of banned) {
+         if (src.includes(ch)) throw new Error("only simple math statements are allowed");
+       }
+
+       // Reject plain (float) number literals — everything must be BigInt.
+       // h and s are BigInts and BigInt ops yield BigInts, so literals are
+       // the only possible source of floating-point numbers.
+       const numLits = src.match(/\b\d[\d_]*n?\b/g) || [];
+       for (const lit of numLits) {
+         if (!lit.endsWith("n"))
+           throw new Error("plain number literal '" + lit + "' not allowed; add the n suffix to make it a BigInt (e.g. " + lit + "n)");
+       }
+
+       if (src.includes("=>")) throw new Error("arrow functions are not allowed");
+       if (/\b(function|class|new|this|globalThis|window|document|eval|Function|import|export|while|do|var|const|if|else|switch|try|catch|throw|async|await|yield|delete|typeof|in|of|instanceof|void|with)\b/.test(src)) {
          throw new Error("disallowed keyword");
        }
-       const exprNoNums = expr.replace(/\b\d[\d_]*n?\b/g, "0");
-       const ids = exprNoNums.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
-       for (const id of ids) if (id !== "h" && id !== "s") throw new Error("identifier not allowed: " + id);
-       const fn = new Function("h","s","\"use strict\"; return (" + expr + ");");
-       const test = fn(WRITTEN_HEIGHT, 1_000_000_000_000_000n);
-       if (typeof test !== "bigint" && typeof test !== "number") {
-         throw new Error("result must be bigint or number");
+
+       // Collect names declared with `let` (handles: let a=1n, b=2n, c=(x)/y;)
+       const allowed = new Set(["h", "s", ...Object.keys(SNIPPET_CONSTANTS)]);
+       const letRe = new RegExp("\\blet\\b([^;]*)", "g");
+       let m;
+       while ((m = letRe.exec(src)) !== null) {
+         let depth = 0, cur = "";
+         const parts = [];
+         for (const ch of m[1]) {
+           if (ch === "(") depth++;
+           else if (ch === ")") depth--;
+           if (ch === "," && depth === 0) { parts.push(cur); cur = ""; }
+           else cur += ch;
+         }
+         parts.push(cur);
+         for (const p of parts) {
+           const dm = p.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(=|$)/);
+           if (!dm) throw new Error("could not parse let declaration: " + p.trim());
+           allowed.add(dm[1]);
+         }
        }
-       if (typeof test === "number" && !Number.isFinite(test)) {
-         throw new Error("number result must be finite");
+
+       // Every identifier must be h, s, an allowed keyword, or a declared name
+       const srcNoNums = src.replace(/\b\d[\d_]*n?\b/g, "0");
+       const ids = srcNoNums.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
+       for (const id of ids) {
+         if (id === "let" || id === "return" || id === "for") continue;
+         if (!allowed.has(id)) throw new Error("identifier not allowed: " + id);
        }
+
+       // Guard every for-loop against infinite iteration.
+       // Note: [(] matches a literal "(" inside a regex with no escaping needed.
+       const forGuardRe = new RegExp("\\bfor\\s*[(]([^;()]*);([^;]*);", "g");
+       const guarded = src.replace(
+         forGuardRe,
+         (all, init, cond) =>
+           "for(" + init + ";(" + (cond.trim() || "true") + ")&&(__steps++<20000000);"
+       );
+
+       const body = /\breturn\b/.test(guarded)
+                  ? guarded
+                  : "return (" + guarded.replace(/;$/, "") + ");";
+       const fn = new Function("h", "s", ...Object.keys(SNIPPET_CONSTANTS),
+                               "\"use strict\";let __steps=0;" + body);
+
+       const test = fn(WRITTEN_HEIGHT, 1_000_000_000_000_000n, ...SNIPPET_CONSTANT_VALUES);
+       if (typeof test !== "bigint")
+         throw new Error("result must be bigint");
+       return fn;
+
        return fn;
      }
-     function byoiIssuanceZat(h, s) {
-       if (h < zip234ActivationHeight) return defaultIssuanceZat(h, s);
-       if (!byoiFn) return 0n;
-       let out = byoiFn(h, s);
-       if (typeof out === "number") {
-         if (!Number.isFinite(out)) throw new Error("BYOI number result must be finite");
-         out = BigInt(Math.trunc(out));
-       }
-       if (typeof out !== "bigint") throw new Error("BYOI result must be bigint or number");
-       return out < 0n ? 0n : out;
-     }
-
      const byoiWarnBtn = document.getElementById("byoiWarnBtn");
      const byoiWarnTip = document.getElementById("byoiWarnTip");
-
-     let byoiCodeFromHash = null;
 
      function escapeHtml(s){
        return String(s).replace(/[&<>"']/g, ch =>
@@ -1013,11 +1036,42 @@
          `<div class="muted" style="margin-top:4px;">${safeMsg}</div>`;
      }
 
-     const scenarios={
-       default:{fn:defaultIssuanceZat,data:[]},
-       zip234:{fn:zip234IssuanceZat,data:[]},
-       nsmalt:{fn:nsmaltIssuanceZat,data:[]},
-       byoi:{fn:byoiIssuanceZat,data:[]}
+     const compiledFns = { default: null, zip234: null, nsmalt: null, byoi: null };
+
+     const snippetFailedFrom = { default: null, zip234: null, nsmalt: null, byoi: null };
+
+     function snippetRuntimeFailure(name, h, msg) {
+       compiledFns[name] = null;
+       snippetFailedFrom[name] = h;
+       markFieldError(name, msg + " (at block " + h.toLocaleString() + ")");
+       truncateScenarioData(name, h);
+       return 0n;
+     }
+
+     function runSnippet(name, h, s) {
+       const fn = compiledFns[name];
+       if (!fn) return 0n;
+       let out;
+       try { out = fn(h, s, ...SNIPPET_CONSTANT_VALUES); }
+       catch (e) {
+         return snippetRuntimeFailure(name, h, String((e && e.message) || e));
+       }
+       if (typeof out !== "bigint") return snippetRuntimeFailure(name, h, "result must be bigint");
+       return out < 0n ? 0n : out;
+     }
+
+     function defaultIssuanceZat(h, s) {
+       return h >= WRITTEN_HEIGHT ? runSnippet('default', h, s) : issuance_per_block(h);
+     }
+     function altIssuanceZat(name, h, s) {
+       return h >= zip234ActivationHeight ? runSnippet(name, h, s) : defaultIssuanceZat(h, s);
+     }
+
+     const scenarios = {
+       default: { fn: (h, s) => defaultIssuanceZat(h, s), data: [] },
+       zip234:  { fn: (h, s) => altIssuanceZat('zip234', h, s), data: [] },
+       nsmalt:  { fn: (h, s) => altIssuanceZat('nsmalt', h, s), data: [] },
+       byoi:    { fn: (h, s) => altIssuanceZat('byoi', h, s), data: [] },
      };
      let simVersion=0n,simRunning=false,simComputedVer=-1n,simComputedMaxH=-1n;
 
@@ -1084,6 +1138,7 @@
            let anyAdvanced=false;
            for(const name of names){
              const s=st[name];
+             if(snippetFailedFrom[name]!==null&&s.h>=snippetFailedFrom[name]){s.h=maxH+1n;continue;}
              if(s.h>maxH)continue;
              anyAdvanced=true;
              const batchEnd=min(s.h+SIM_BATCH,maxH+1n);
@@ -1096,7 +1151,7 @@
                    burnThisBlock = burnAmt < s.supZat ? burnAmt : s.supZat;
                  } else if (b.mode === 'perday' && h >= b.h) {
                    const spb = h < BLOSSOM_ACTIVATION_HEIGHT ? 150n : 75n;
-                   const perBlock = burnAmt * spb / 86400n;
+                   const perBlock = perdayBurnAtBlock(burnAmt, spb, h - b.h);
                    burnThisBlock = perBlock < s.supZat ? perBlock : s.supZat;
                  }
                  if (burnThisBlock > 0n) {
@@ -1122,12 +1177,22 @@
              }
              s.h=batchEnd;
            }
+
            if(!anyAdvanced)break;
            if(isFirstRun && !yLockedFromURL) yDirty = true;
            requestDraw();
            await new Promise(r=>setTimeout(r,0));
            if(simVersion!==myVer){cancelled=true;}
          }
+
+         if(!cancelled){
+           // Completed a full pass at this version: record it and stop.
+           simComputedVer=myVer;
+           simComputedMaxH=maxH;
+           break;
+         }
+         // else: version changed mid-pass (data was truncated); loop again
+         // to rebuild state from the new arrays and continue simulating.
        }
        simRunning=false;if(isFirstRun && !yLockedFromURL) yDirty=true;requestDraw();
      }
@@ -1145,13 +1210,11 @@
        return "Burn " + zatToZecString(zat) + " " + u;
      }
 
-     function supplyAtHeightZat(h) { return sumIssuanceRangeClean(0n, h); }
-
      /* ================================================================
         View state
         ================================================================ */
      const MAX_TIME=Date.UTC(2100,0,1),MIN_SPAN=30*86400_000;
-     const view={tMin: genTime,tMax: blockToTime(6_000_000)};
+     const view={tMin: genTime,tMax: blockToTime(6_000_000n)};
 
      function clampView(){
        let span=view.tMax-view.tMin;
@@ -1163,7 +1226,7 @@
 
      function resetView(){
        yLockedFromURL = false;
-       yDirty=true;view.tMin=genTime;view.tMax=blockToTime(6_000_000);clampView();requestDraw();computeAllScenarios();
+       yDirty=true;view.tMin=genTime;view.tMax=blockToTime(6_000_000n);clampView();requestDraw();computeAllScenarios();
      }
 
      function zoomToActivation(h){
@@ -1280,23 +1343,18 @@
      const FIXED_SUP_STEP_ZAT = 3_000_000n * ZATOSHI;
      const FIXED_ISS_MAX_ZAT = 8_000n * ZATOSHI;
      const FIXED_ISS_STEP_ZAT = 2_000n * ZATOSHI;
-     const FIXED_ANN_MAX = 30;
-     const FIXED_ANN_STEP = 5;
 
      const yTarget = {
        supMinZat: FIXED_SUP_MIN_ZAT, supMaxZat: FIXED_SUP_MAX_ZAT, supStepZat: FIXED_SUP_STEP_ZAT,
        issMaxZat: FIXED_ISS_MAX_ZAT, issStepZat: FIXED_ISS_STEP_ZAT,
-       annMax: FIXED_ANN_MAX, annStep: FIXED_ANN_STEP,
      };
      const yDisp = {
        supMinZat: FIXED_SUP_MIN_ZAT, supMaxZat: FIXED_SUP_MAX_ZAT,
-       issMaxZat: FIXED_ISS_MAX_ZAT, annMax: FIXED_ANN_MAX,
+       issMaxZat: FIXED_ISS_MAX_ZAT,
      };
-     let yInitialized = false;
      let yDirty = true;
      let ySnapOnFirstData = false;
      let yLockedFromURL = false;
-     let yPinnedFromURL = false;
 
      function lerpZat(cur, tgt) {
        if (cur === tgt) return cur;
@@ -1311,16 +1369,13 @@
        const ni = lerpZat(yDisp.issMaxZat, yTarget.issMaxZat);
        if (ns !== yDisp.supMinZat || nx !== yDisp.supMaxZat || ni !== yDisp.issMaxZat) changed = true;
        yDisp.supMinZat = ns; yDisp.supMaxZat = nx; yDisp.issMaxZat = ni;
-       const ad = yTarget.annMax - yDisp.annMax;
-       if (Math.abs(ad) > 0.01) { yDisp.annMax += ad * 0.15; changed = true; }
-       else if (yDisp.annMax !== yTarget.annMax) { yDisp.annMax = yTarget.annMax; changed = true; }
        return changed;
      }
 
      function updateYTargets() {
        const hasAltFuture = showZip234() || showNsmalt() || showByoi();
        const cutH = showDefaultFuture() ? 0x7FFFFFFFFFFFFFn : (hasAltFuture ? zip234ActivationHeight : WRITTEN_HEIGHT);
-       let sMin = MAX_MONEY_ZAT, sMax = 0n, iMax = 0n, aMax = 0n;
+       let sMin = MAX_MONEY_ZAT, sMax = 0n, iMax = 0n;
 
        function scanArr(arr, minH) {
          for (const p of arr) {
@@ -1421,7 +1476,6 @@
            yDisp.supMinZat = yTarget.supMinZat;
            yDisp.supMaxZat = yTarget.supMaxZat;
            yDisp.issMaxZat = yTarget.issMaxZat;
-           yDisp.annMax = yTarget.annMax;
            if (!simRunning) ySnapOnFirstData = false;
          }
        }
@@ -1437,11 +1491,9 @@
          if (yDisp.issMaxZat <= 0n) return MG.top + PH;
          return MG.top + PH - Number(zat * BigInt(PH) * 1000n / yDisp.issMaxZat) / 1000;
        };
-       const yAP = p => MG.top + PH - (p / yDisp.annMax) * PH;
 
        const dispSupStep = niceStepZat(ySupRange, 6);
        const dispIssStep = niceStepZat(yDisp.issMaxZat, 5);
-       const dispAnnStep = niceStepNum(yDisp.annMax, 5);
        const supUseMSuffix = yDisp.supMaxZat >= 1_000_000n * ZATOSHI;
 
        // Grid
@@ -1508,8 +1560,6 @@
          ctx.lineTo(xP(pts[pts.length-1].time),baseline);
          ctx.closePath();ctx.fillStyle=color;ctx.fill();
        }
-
-       const ANNUAL_PCT_SPLIT_HEIGHT = WRITTEN_HEIGHT - ONE_YEAR_MS / 1000n / (WRITTEN_HEIGHT < 653600n ? 150n : 75n);
 
        // Default model curves
        if(D.length>=2){
@@ -1646,26 +1696,6 @@
        if (yAnimating) requestDraw();
 
        syncURL();
-     }
-
-     /* ================================================================
-        Activation handle geometry helpers
-        ================================================================ */
-     function computeStemHeightFromBottom(visibleBottomInWrap, plotTop, minHeight=4){
-       return max(minHeight, plotTop - visibleBottomInWrap);
-     }
-
-     function measureActHandleGeometry({ actHandle, wrapEl, actCollapsed, MG }){
-       actHandle.classList.toggle("collapsed", actCollapsed);
-       actHandle.offsetHeight;
-       const visibleEl = actCollapsed
-                       ? actHandle.querySelector(".act-nub")
-                       : actHandle.querySelector(".act-pill");
-       const visibleRect = visibleEl.getBoundingClientRect();
-       const wrapRect = wrapEl.getBoundingClientRect();
-       const visibleBottomInWrap = visibleRect.bottom - wrapRect.top;
-       const stemHeight = computeStemHeightFromBottom(visibleBottomInWrap, MG.top);
-       return { visibleBottomInWrap, stemHeight };
      }
 
      /* ================================================================
@@ -1874,6 +1904,10 @@
          inp.addEventListener("click", e => e.stopPropagation());
        });
 
+       blockIn.addEventListener("blur", () => commitBlock());
+       dateIn.addEventListener("blur", () => commitDate());
+       amtIn.addEventListener("blur", () => commitAmt());
+
        blockIn.addEventListener('input', () => {
          try {
            const v = BigInt(blockIn.value.replace(/,/g, '').trim());
@@ -1955,10 +1989,6 @@
        invalidateAllFrom(h);
        requestDraw();
      });
-
-     function clampBurnHeight(h){
-       return max(WRITTEN_HEIGHT, h);
-     }
 
      function updateAllBurnHandles() {
        for (const b of BURN_EVENTS) {
@@ -2191,7 +2221,7 @@
        const showDefHere=d.h<=defaultCutoffH2;
 
        if(showDefHere){
-         if(show.supply)html+=`<div style="margin-top:6px"><span style="color:var(--supplyObs)">Supply:</span> ${zatToZecString(d.supplyZat, 2)} ⓩ <span class="tt-muted">(${pct}% of cap)</span></div>`;
+         if(show.supply){const pct=pctOfCapStr(d.supplyZat);html+=`<div style="margin-top:6px"><span style="color:var(--supplyObs)">Supply:</span> ${zatToZecString(d.supplyZat, 2)} ⓩ <span class="tt-muted">(${pct}% of cap)</span></div>`;}
          if(show.issDay)html+=`<div><span style="color:var(--issObs)">Issuance:</span> ${zatToZecString(d.issDayZat, 1)} ⓩ/day</div><div class="tt-muted">Per block: ${zatToZecString(d.issBlockZat, 8, 8)} ⓩ</div>`;
        }
 
@@ -2363,6 +2393,12 @@
      });
      actBlockInput.addEventListener("mousedown",e=>e.stopPropagation());
      actBlockInput.addEventListener("click",e=>e.stopPropagation());
+     actBlockInput.addEventListener("blur", () => {
+       try {
+         const v = BigInt(actBlockInput.value.replace(/,/g, "").trim());
+         if (v >= 0n) changeZIP234ActivationHeight(v);
+       } catch(e) {}
+     });
 
      // --- Activation handle: date input ---
      actDateInput.addEventListener("keydown",e=>{
@@ -2371,6 +2407,10 @@
      });
      actDateInput.addEventListener("mousedown",e=>e.stopPropagation());
      actDateInput.addEventListener("click",e=>e.stopPropagation());
+     actDateInput.addEventListener("blur", () => {
+       const parsed = Date.parse(actDateInput.value.trim());
+       if (!isNaN(parsed)) changeZIP234ActivationHeight(timeToHeight(parsed));
+     });
 
      actBlockInput.addEventListener('input', () => {
        try {
@@ -2558,8 +2598,7 @@
      let lastUrlSyncTime = 0;
 
      const STATE_BUNDLE_KEY = "z";
-     const STATE_BUNDLE_VER = 7;
-     const STATE_BUNDLE_VER_V6 = 6;
+     const STATE_BUNDLE_VER = 8;
 
      function b64urlFromBytes(bytes) {
        let bin = "";
@@ -2603,7 +2642,7 @@
        const out = [];
        out.push(STATE_BUNDLE_VER);
 
-       // v7 flags byte:
+       // v8 flags byte:
        // bit0 showFuture.default, bit1 showFuture.zip234,
        // bit2 showFuture.nsmalt, bit3 showFuture.byoi,
        // bit4 supply, bit5 issDay, bit7 themeLight
@@ -2637,10 +2676,6 @@
        writeVarUint(out, yDisp.supMaxZat);
        writeVarUint(out, yDisp.issMaxZat);
 
-       const yaMilli = Math.round(yDisp.annMax * 1000);
-       if (!Number.isFinite(yaMilli) || yaMilli < 0) throw new Error("invalid annMax");
-       writeVarUint(out, BigInt(yaMilli));
-
        const byoiEnc = encodeStringForState(getByoiCodeForState());
        out.push(byoiEnc.mode);
        writeBytes(out, byoiEnc.bytes);
@@ -2665,7 +2700,6 @@
          if (st.i >= bytes.length) return false;
          const ver = bytes[st.i++];
          if (
-           ver !== STATE_BUNDLE_VER_V6 &&
            ver !== STATE_BUNDLE_VER
          ) return false;
 
@@ -2720,8 +2754,6 @@
          const ysMin = readVarUint(bytes, st);
          const ysMax = readVarUint(bytes, st);
          const yi = readVarUint(bytes, st);
-         const yaMilli = readVarUint(bytes, st);
-         const ya = Number(yaMilli) / 1000;
 
          let loadedByoiCode = null;
          if (st.i < bytes.length) {
@@ -2732,13 +2764,11 @@
            if (loadedByoiCode.length > 200000) return false;
          }
 
-         byoiCodeFromHash = loadedByoiCode;
          if (loadedByoiCode !== null) byoiCode = loadedByoiCode;
 
          if (!Number.isFinite(tMin) || !Number.isFinite(tMax) || !(tMax > tMin)) return false;
          if (actH < WRITTEN_HEIGHT) return false;
          if (ysMin > ysMax) return false;
-         if (!Number.isFinite(ya) || ya < 0) return false;
          for (const b of burns) {
            if (b.h < WRITTEN_HEIGHT || b.zat < 0n) return false;
          }
@@ -2760,15 +2790,12 @@
            BURN_EVENTS.push(nb);
          }
 
-         if (loadedByoiCode !== null) byoiCode = loadedByoiCode;
-
          setTheme(newTheme);
          actCollapsed = newActCollapsed;
 
          yTarget.supMinZat = ysMin; yDisp.supMinZat = ysMin;
          yTarget.supMaxZat = ysMax; yDisp.supMaxZat = ysMax;
          yTarget.issMaxZat = yi;    yDisp.issMaxZat = yi;
-         yTarget.annMax = ya;       yDisp.annMax = ya;
 
          yDirty = false;
          yLockedFromURL = true;
@@ -2859,24 +2886,6 @@
        return result;
      }
 
-     function getZip234At(h) {
-       if (h < zip234ActivationHeight) return null;
-       if (scenarios.zip234.data.length > 0) {
-         const z = lookupScenario(scenarios.zip234.data, h);
-         if (z && abs(z.h - h) <= SAMPLE_EVERY)
-           return { supply: z.supplyZat, issBlock: z.issBlockZat };
-       }
-       const supAtAct = sumIssuanceRangeClean(0n, zip234ActivationHeight);
-       const remAtAct = MAX_MONEY_ZAT - supAtAct;
-       const ONE_MINUS_K = (1n << 64n) - ZIP234_K_NUM;
-       const n = h - zip234ActivationHeight;
-       const decayFP = bigPowFP64(ONE_MINUS_K, n);
-       const remNow = (remAtAct * decayFP) >> 64n;
-       const supNow = MAX_MONEY_ZAT - remNow;
-       const issBlockZat = (remNow * ZIP234_K_NUM) >> 64n;
-       return { supply: supNow, issBlock: issBlockZat };
-     }
-
      urlSyncEnabled = true;
 
      document.getElementById("codeDefault").value = DEFAULT_CODE;
@@ -2885,21 +2894,41 @@
      const codeByoiEl = document.getElementById("codeByoi");
      codeByoiEl.value = byoiCode;
 
+     const FIELD_IDS = { default: "codeDefault", zip234: "codeZip234", nsmalt: "codeNsmalt", byoi: "codeByoi" };
+     function markFieldError(name, msg) {
+       const el = document.getElementById(FIELD_IDS[name]);
+       if (el) { el.classList.add("error"); el.title = msg; }
+       if (name === "byoi") setByoiCompileErrorUI(msg);
+     }
+     function clearFieldError(name) {
+       const el = document.getElementById(FIELD_IDS[name]);
+       if (el) { el.classList.remove("error"); el.title = ""; }
+       if (name === "byoi") clearByoiCompileErrorUI();
+     }
+
+     // Compile the three immutable snippets exactly once at boot.
+     for (const nc of [["default", DEFAULT_CODE], ["zip234", ZIP234_CODE], ["nsmalt", NSMALT_CODE]]) {
+       try {
+         compiledFns[nc[0]] = compileSnippet(nc[1]);
+       } catch (e) {
+         compiledFns[nc[0]] = null;
+         markFieldError(nc[0], String((e && e.message) || e));
+         console.error("Immutable snippet '" + nc[0] + "' failed to compile:", e);
+       }
+     }
+
      function applyByoiCode(opts = {}) {
        if (!opts.keepYLock) yLockedFromURL = false;
-       const src = codeByoiEl.value;
-       byoiCode = src;
+       byoiCode = codeByoiEl.value;
        try {
-         byoiFn = compileByoi(src);
-         byoiError = "";
-         clearByoiCompileErrorUI();
-         invalidateScenarioFrom('byoi', zip234ActivationHeight);
+         compiledFns.byoi = compileSnippet(byoiCode);
+         snippetFailedFrom.byoi = null;
+         clearFieldError('byoi');
        } catch (e) {
-         byoiFn = null;
-         byoiError = String(e && e.message || e);
-         setByoiCompileErrorUI(byoiError);
-         invalidateScenarioFrom('byoi', zip234ActivationHeight);
+         compiledFns.byoi = null;
+         markFieldError('byoi', String((e && e.message) || e));
        }
+       invalidateScenarioFrom('byoi', zip234ActivationHeight);
      }
      applyByoiCode({ keepYLock: loadedFromURL });
 
@@ -2983,12 +3012,12 @@
          return TIME_ANCHORS[0].time === Date.UTC(2016, 9, 28, 7, 56);
        });
 
-       test("blockToTime(0) equals genesis time", () => {
-         return blockToTime(0) === TIME_ANCHORS[0].time;
+       test("blockToTime(0n) equals genesis time", () => {
+         return blockToTime(0n) === TIME_ANCHORS[0].time;
        });
 
        test("blockToTime is monotonically increasing", () => {
-         const h = [0, 100000, 653600, 1046400, 2000000, 2726400, 3000000];
+         const h = [0n, 100000n, 653600n, 1046400n, 2000000n, 2726400n, 3000000n];
          for (let i = 1; i < h.length; i++) {
            if (blockToTime(h[i]) <= blockToTime(h[i - 1])) return false;
          }
@@ -3017,37 +3046,14 @@
 
        // --- ZIP 234 math ---
 
-       test("getZip234At returns null for height below activation", () => {
-         return getZip234At(zip234ActivationHeight - 1n) === null;
-       });
-
-       test("ZIP 234 supply is monotonically increasing", () => {
-         const actH = zip234ActivationHeight;
-         const heights = [actH, actH + 10000n, actH + 100000n, actH + 500000n];
-         let prev = 0;
-         for (const h of heights) {
-           const z = getZip234At(h);
-           if (!z || z.supply <= prev) return false;
-           prev = z.supply;
-         }
-         return true;
-       });
-
-       test("ZIP 234 issuance per block is positive and decreasing", () => {
-         const actH = zip234ActivationHeight;
-         const heights = [actH, actH + 100000n, actH + 500000n, actH + 1000000n];
-         let prev = MAX_MONEY_ZAT;
-         for (const h of heights) {
-           const z = getZip234At(h);
-           if (!z || z.issBlock <= 0n || z.issBlock >= prev) return false;
-           prev = z.issBlock;
-         }
-         return true;
-       });
-
-       test("ZIP 234 supply never exceeds 21M", () => {
-         const z = getZip234At(zip234ActivationHeight + 10_000_000n);
-         return z !== null && z.supply <= MAX_MONEY_ZAT;
+       test("1/2,423,728 per block gives a four-year half-life (within 1 block in 1.68M)", () => {
+         const K = 2_423_728n;
+         const ONE = 1n << 64n;
+         const base = ONE - ONE / K;                    // (1 - 1/K) in 64-bit fixed point
+         const decay = bigPowFP64(base, 1_680_000n);    // (1 - 1/K)^1,680,000
+         const half = 1n << 63n;
+         const tol = half / 1_000_000n;                 // 1 ppm
+         return abs(decay - half) < tol;
        });
 
        // --- NSMalt scenario ---
@@ -3098,13 +3104,45 @@
          return sumIssuanceRangeClean(20000n, 20010n) === brute;
        });
 
+       // --- Per-day burn precision ---
+
+       test("per-day burn of 0.0001 ZEC/day is exact over one year (no truncation loss)", () => {
+         const burnAmt = 10_000n;              // 0.0001 ZEC/day in zatoshis
+         const spb = 75n;                      // seconds per block post-Blossom
+         const N = 420_480n;                   // ~1 year of 75s blocks
+         let total = 0n;
+         for (let n = 0n; n < N; n++) total += perdayBurnAtBlock(burnAmt, spb, n);
+         // The cumulative-difference sum telescopes: total must EXACTLY equal
+         // floor(amt * spb * N / 86400) — here 3,650,000 zat = 0.0365 ZEC.
+         const exact = burnAmt * spb * N / 86400n;
+         if (total !== exact) return false;
+         // And prove the old naive per-block truncation would have been wrong:
+         const naive = (burnAmt * spb / 86400n) * N; // 8 zat/block * N — ~8% short
+         return naive !== exact;
+       });
+
+       test("per-day burn is never negative and per-block values differ by at most 1 zat", () => {
+         const burnAmt = 123_456_789n; // awkward amount to stress rounding
+         const spb = 75n;
+         let lo = null, hi = null;
+         for (let n = 0n; n < 10_000n; n++) {
+           const v = perdayBurnAtBlock(burnAmt, spb, n);
+           if (v < 0n) return false;
+           if (lo === null || v < lo) lo = v;
+           if (hi === null || v > hi) hi = v;
+         }
+         return hi - lo <= 1n;
+       });
+
        // --- View state ---
 
-       test("view.tMin is at or near genesis at boot", () => {
+       test("view.tMin is at or near genesis at boot (unless loaded from URL state)", () => {
+         if (loadedFromURL) return view.tMax > view.tMin; // just sanity-check the loaded view
          return Math.abs(view.tMin - genTime) < 86_400_000;
        });
 
-       test("view.tMax corresponds to roughly block 6M", () => {
+       test("view.tMax corresponds to roughly block 6M (unless loaded from URL state)", () => {
+         if (loadedFromURL) return view.tMax > view.tMin;
          const expected = blockToTime(6_000_000n);
          return Math.abs(view.tMax - expected) < 86_400_000 * 30;
        });
@@ -3118,6 +3156,97 @@
          return top <= 0;
        });
 
+       test("blockToTime hits every anchor exactly (no truncation discontinuity)", () => {
+         for (const a of TIME_ANCHORS) if (blockToTime(a.h) !== a.time) return false;
+         return true;
+       });
+
+       test("timeToHeight(blockToTime(h)) roundtrips within 1 block", () => {
+         const hs = [0n, 500_000n, 1_046_400n, 2_000_000n, 2_726_400n, 3_234_946n, 5_000_000n];
+         for (const h of hs) { const h2 = timeToHeight(blockToTime(h)); if (abs(h2 - h) > 1n) return false; }
+         return true;
+       });
+
+       test("model supply at halving 2 is exactly 15,750,000 ZEC", () => {
+         return sumIssuanceRangeClean(0n, 2_726_400n) === 1_575_000_000_000_000n;
+       });
+
+       test("model supply at block 3,450,187 matches ZecHub 2026-08-15 within 400 ZEC", () => {
+         const model = sumIssuanceRangeClean(0n, 3_450_187n); // 16,880,917.1875 ZEC exactly
+         if (model !== 1_688_091_718_750_000n) return false;
+         const zechub = 16_880_552n * ZATOSHI;                // observed circulation
+         return abs(model - zechub) < 400n * ZATOSHI;          // gap = miner shortfalls + NSM burns
+       });
+
+       // --- ZIP 234 math (tested against the actual simulation data) ---
+
+       // --- ZIP 234 math (tested on an isolated, burn-free simulation of the rule) ---
+
+       test("ZIP 234 rule: supply strictly increases while issuance is nonzero, never exceeds 21M", () => {
+         const K = 2_423_728n;
+         // Start from the model supply at the default activation height.
+         let supply = sumIssuanceRangeClean(0n, zip234ActivationHeight);
+         let prev = supply - 1n;
+         for (let i = 0n; i < 300_000n; i++) {          // ~8.5 months of blocks
+           const iss = (MAX_MONEY_ZAT - supply) / K;
+           supply += iss;
+           if (supply > MAX_MONEY_ZAT) return false;     // cap violated
+           if (iss > 0n && supply <= prev) return false; // failed to increase
+           if (iss === 0n && supply !== prev + 0n && supply !== prev) return false;
+           prev = supply;
+         }
+         return true;
+       });
+
+       test("ZIP 234 rule: per-block issuance is non-increasing", () => {
+         const K = 2_423_728n;
+         let supply = sumIssuanceRangeClean(0n, zip234ActivationHeight);
+         let prevIss = MAX_MONEY_ZAT;
+         for (let i = 0n; i < 300_000n; i++) {
+           const iss = (MAX_MONEY_ZAT - supply) / K;
+           if (iss > prevIss) return false;
+           supply += iss;
+           prevIss = iss;
+         }
+         return true;
+       });
+
+       test("ZIP 234 rule: terminal behavior — issuance hits zero exactly when gap < K, then supply freezes", () => {
+         const K = 2_423_728n;
+         let supply = MAX_MONEY_ZAT - 3n * K;            // start 3K zats below the cap
+         for (let i = 0; i < 100; i++) {
+           const iss = (MAX_MONEY_ZAT - supply) / K;
+           const gap = MAX_MONEY_ZAT - supply;
+           if ((iss === 0n) !== (gap < K)) return false; // zero iff gap < K
+           supply += iss;
+         }
+         return supply < MAX_MONEY_ZAT;                  // freezes strictly below cap, never crosses
+       });
+
+       test("ZIP 234 supply never exceeds 21M (sim data + recurrence property)", () => {
+         const zd = scenarios.zip234.data;
+         for (const p of zd) if (p.supplyZat > MAX_MONEY_ZAT) return false;
+         // Property: floor(gap/K) <= gap for all gap >= 0, so supply+issuance <= MAX, always.
+         for (const gap of [0n, 1n, 2_423_727n, 2_423_728n, 5_000_000_000_000n, MAX_MONEY_ZAT]) {
+           if (gap / 2_423_728n > gap) return false;
+         }
+         return true;
+       });
+
+       test("DEFAULT_CODE snippet matches issuance_per_block for future heights", () => {
+         const fn = compileSnippet(DEFAULT_CODE);
+         const hs = [WRITTEN_HEIGHT, 4_406_399n, 4_406_400n, 6_086_400n, 9_000_000n];
+         for (const h of hs) {
+           if (fn(h, 0n, ...SNIPPET_CONSTANT_VALUES) !== issuance_per_block(h)) return false;
+         }
+         return true;
+       });
+
+       test("runSnippet supplies shared constants (regression for red-boxes bug)", () => {
+         return runSnippet('zip234', WRITTEN_HEIGHT + 1n, 1_700_000_000_000_000n) ===
+           (MAX_MONEY_ZAT - 1_700_000_000_000_000n) / 2_423_728n;
+       });
+
        // --- Report ---
 
        const passed = results.filter(r => r.pass).length;
@@ -3126,6 +3255,9 @@
 
        if (failed > 0) {
          console.warn(`⚠️ ${failed} regression test(s) FAILED — check for regressions before shipping!`);
+         for (const r of results) {
+           if (!r.pass) console.warn("  ✗ " + r.name + (r.error ? " — threw: " + r.error : ""));
+         }
        }
      }, 500);
     </script>
