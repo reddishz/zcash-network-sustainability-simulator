@@ -2950,6 +2950,9 @@
          markFieldError('byoi', String((e && e.message) || e));
        }
        invalidateScenarioFrom('byoi', zip234ActivationHeight);
+
+       // Persist the exact BYOI source text in the URL immediately.
+       if (urlSyncEnabled) syncURL(true);
      }
      applyByoiCode({ keepYLock: loadedFromURL });
 
