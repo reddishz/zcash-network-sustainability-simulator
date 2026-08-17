@@ -954,7 +954,12 @@
        }
 
        // Collect names declared with `let` (handles: let a=1n, b=2n, c=(x)/y;)
-       const allowed = new Set(["h", "s", ...Object.keys(SNIPPET_CONSTANTS)]);
+       const allowed = new Set([
+         "h",
+         "s",
+         "ACTIVATION_HEIGHT",
+         ...Object.keys(SNIPPET_CONSTANTS)
+       ]);
        const letRe = new RegExp("\\blet\\b([^;]*)", "g");
        let m;
        while ((m = letRe.exec(src)) !== null) {
@@ -994,13 +999,22 @@
        const body = /\breturn\b/.test(guarded)
                   ? guarded
                   : "return (" + guarded.replace(/;$/, "") + ");";
-       const fn = new Function("h", "s", ...Object.keys(SNIPPET_CONSTANTS),
-                               "\"use strict\";let __steps=0;" + body);
+       const fn = new Function(
+         "h",
+         "s",
+         ...Object.keys(SNIPPET_CONSTANTS),
+         "ACTIVATION_HEIGHT",
+         "\"use strict\";let __steps=0;" + body
+       );
 
-       const test = fn(WRITTEN_HEIGHT, 1_000_000_000_000_000n, ...SNIPPET_CONSTANT_VALUES);
-       if (typeof test !== "bigint")
-         throw new Error("result must be bigint");
-       return fn;
+       const testH = max(WRITTEN_HEIGHT, zip234ActivationHeight);
+
+       const test = fn(
+         testH,
+         1_000_000_000_000_000n,
+         ...SNIPPET_CONSTANT_VALUES,
+         zip234ActivationHeight
+       );
 
        return fn;
      }
@@ -1052,7 +1066,14 @@
        const fn = compiledFns[name];
        if (!fn) return 0n;
        let out;
-       try { out = fn(h, s, ...SNIPPET_CONSTANT_VALUES); }
+       try {
+         out = fn(
+           h,
+           s,
+           ...SNIPPET_CONSTANT_VALUES,
+           zip234ActivationHeight
+         );
+       }
        catch (e) {
          return snippetRuntimeFailure(name, h, String((e && e.message) || e));
        }
