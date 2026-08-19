@@ -957,6 +957,7 @@
        const allowed = new Set([
          "h",
          "s",
+         "lastIssZat",
          "ACTIVATION_HEIGHT",
          ...Object.keys(SNIPPET_CONSTANTS)
        ]);
@@ -1002,6 +1003,7 @@
        const fn = new Function(
          "h",
          "s",
+         "lastIssZat",
          ...Object.keys(SNIPPET_CONSTANTS),
          "ACTIVATION_HEIGHT",
          "\"use strict\";let __steps=0;" + body
@@ -1012,6 +1014,7 @@
        const test = fn(
          testH,
          1_000_000_000_000_000n,
+         0n,
          ...SNIPPET_CONSTANT_VALUES,
          zip234ActivationHeight
        );
@@ -1062,7 +1065,7 @@
        return 0n;
      }
 
-     function runSnippet(name, h, s) {
+     function runSnippet(name, h, s, lastIssZat) {
        const fn = compiledFns[name];
        if (!fn) return 0n;
        let out;
@@ -1070,6 +1073,7 @@
          out = fn(
            h,
            s,
+           lastIssZat,
            ...SNIPPET_CONSTANT_VALUES,
            zip234ActivationHeight
          );
@@ -1081,18 +1085,18 @@
        return out < 0n ? 0n : out;
      }
 
-     function defaultIssuanceZat(h, s) {
-       return h >= WRITTEN_HEIGHT ? runSnippet('default', h, s) : issuance_per_block(h);
+     function defaultIssuanceZat(h, s, lastIssZat) {
+       return h >= WRITTEN_HEIGHT ? runSnippet('default', h, s, lastIssZat) : issuance_per_block(h);
      }
-     function altIssuanceZat(name, h, s) {
-       return h >= zip234ActivationHeight ? runSnippet(name, h, s) : defaultIssuanceZat(h, s);
+     function altIssuanceZat(name, h, s, lastIssZat) {
+       return h >= zip234ActivationHeight ? runSnippet(name, h, s, lastIssZat) : defaultIssuanceZat(h, s, lastIssZat);
      }
 
      const scenarios = {
-       default: { fn: (h, s) => defaultIssuanceZat(h, s), data: [] },
-       zip234:  { fn: (h, s) => altIssuanceZat('zip234', h, s), data: [] },
-       nsmalt:  { fn: (h, s) => altIssuanceZat('nsmalt', h, s), data: [] },
-       byoi:    { fn: (h, s) => altIssuanceZat('byoi', h, s), data: [] },
+       default: { fn: (h, s, remZat, lastIssZat) => defaultIssuanceZat(h, s, lastIssZat), data: [] },
+       zip234:  { fn: (h, s, remZat, lastIssZat) => altIssuanceZat('zip234', h, s, lastIssZat), data: [] },
+       nsmalt:  { fn: (h, s, remZat, lastIssZat) => altIssuanceZat('nsmalt', h, s, lastIssZat), data: [] },
+       byoi:    { fn: (h, s, remZat, lastIssZat) => altIssuanceZat('byoi', h, s, lastIssZat), data: [] },
      };
      let simVersion=0n,simRunning=false,simComputedVer=-1n,simComputedMaxH=-1n;
 
@@ -1142,17 +1146,18 @@
          const st={};
          for(const name of names){
            const result=scenarios[name].data,fn=scenarios[name].fn;
-           let startH,supZat,cumIssZat,remZat;
+           let startH,supZat,cumIssZat,remZat,lastIssZat;
            if(result.length>0){
              const last=result[result.length-1];
              startH=last.h+1n;
              supZat=last.supplyZat;
              cumIssZat=last.cumIssZat;
              remZat=MAX_MONEY_ZAT-supZat;
+             lastIssZat=last.issBlockZat;
            }else{
-             startH=0n;supZat=0n;cumIssZat=0n;remZat=MAX_MONEY_ZAT;
+             startH=0n;supZat=0n;cumIssZat=0n;remZat=MAX_MONEY_ZAT;lastIssZat=0n;
            }
-           st[name]={result,fn,h:startH,supZat,cumIssZat,remZat};
+           st[name]={result,fn,h:startH,supZat,cumIssZat,remZat,lastIssZat};
          }
 
          while(!cancelled){
@@ -1181,9 +1186,9 @@
                  }
                }
 
-               const issZat = s.fn(h, s.supZat, s.remZat);
+               const issZat = s.fn(h, s.supZat, s.remZat, s.lastIssZat);
 
-               s.supZat+=issZat;s.cumIssZat+=issZat;s.remZat-=issZat;
+               s.supZat+=issZat;s.cumIssZat+=issZat;s.remZat-=issZat;s.lastIssZat=issZat;
                if(h%SAMPLE_EVERY===0n){
                  const spb=BigInt(h<BLOSSOM_ACTIVATION_HEIGHT?150n:75n);
                  const pt={
@@ -3261,14 +3266,24 @@
          const fn = compileSnippet(DEFAULT_CODE);
          const hs = [WRITTEN_HEIGHT, 4_406_399n, 4_406_400n, 6_086_400n, 9_000_000n];
          for (const h of hs) {
-           if (fn(h, 0n, ...SNIPPET_CONSTANT_VALUES) !== issuance_per_block(h)) return false;
+           if (fn(h, 0n, 0n, ...SNIPPET_CONSTANT_VALUES) !== issuance_per_block(h)) return false;
          }
          return true;
        });
 
        test("runSnippet supplies shared constants (regression for red-boxes bug)", () => {
-         return runSnippet('zip234', WRITTEN_HEIGHT + 1n, 1_700_000_000_000_000n) ===
+         return runSnippet('zip234', WRITTEN_HEIGHT + 1n, 1_700_000_000_000_000n, 0n) ===
            (MAX_MONEY_ZAT - 1_700_000_000_000_000n) / 2_423_728n;
+       });
+
+       test("runSnippet supplies lastIssZat to snippets", () => {
+         const oldFn = compiledFns.byoi;
+         try {
+           compiledFns.byoi = compileSnippet("return lastIssZat;");
+           return runSnippet('byoi', WRITTEN_HEIGHT + 1n, 1_700_000_000_000_000n, 123_456n) === 123_456n;
+         } finally {
+           compiledFns.byoi = oldFn;
+         }
        });
 
        // --- Report ---
